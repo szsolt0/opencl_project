@@ -1,0 +1,8 @@
+[package]
+name = "opencl_project"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+opencl3 = "0.12"
+image = "0.25"

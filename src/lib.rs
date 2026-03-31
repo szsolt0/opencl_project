@@ -1,3 +1,4 @@
+use opencl3::context::Context;
 use opencl3::memory::Buffer;
 use opencl3::command_queue::CommandQueue;
 use opencl3::kernel::Kernel;
@@ -310,6 +311,7 @@ impl ExposureOklabKernel {
 
 
 pub struct ColorKernels {
+    pub program: Program,
     pub rgba8_to_oklab: Rgba8ToOklabKernel,
     pub oklab_to_rgba8: OklabToRgba8Kernel,
     pub hue_shift_oklab: HueShiftOklabKernel,
@@ -319,14 +321,42 @@ pub struct ColorKernels {
 }
 
 impl ColorKernels {
-    pub fn new(program: &Program) -> Result<Self, opencl3::error_codes::ClError> {
+    fn load_program(context: &Context, options: Option<&str>) -> std::result::Result<Program, Box<dyn std::error::Error>> {
+        let paths = &[
+            "kernels/oklab_to_rgba8.cl",
+            "kernels/rgba8_to_oklab.cl",
+            "kernels/filters/hue_shift.cl",
+            "kernels/filters/exposure.cl",
+            "kernels/filters/saturation.cl",
+            "kernels/filters/contrast.cl",
+        ];
+
+        let mut full_source = String::new();
+
+        for path in paths {
+            full_source.push_str(&std::fs::read_to_string(path)?);
+        }
+
+        // Not supplying build options uses the default optimizations.
+        let build_options = match options {
+            Some(x) => x,
+            _ => "-O2",
+        };
+
+        Ok(Program::create_and_build_from_source(&context, &full_source, &build_options)?)
+    }
+
+    pub fn create(context: &Context, options: Option<&str>) -> std::result::Result<Self, Box<dyn std::error::Error>> {
+        let program = Self::load_program(&context, options)?;
+
         Ok(Self {
-            rgba8_to_oklab: Rgba8ToOklabKernel::new(program)?,
-            oklab_to_rgba8: OklabToRgba8Kernel::new(program)?,
-            hue_shift_oklab: HueShiftOklabKernel::new(program)?,
-            contrast_oklab: ContrastOklabKernel::new(program)?,
-            saturation_oklab: SaturationOklabKernel::new(program)?,
-            exposure_oklab: ExposureOklabKernel::new(program)?,
+            rgba8_to_oklab: Rgba8ToOklabKernel::new(&program)?,
+            oklab_to_rgba8: OklabToRgba8Kernel::new(&program)?,
+            hue_shift_oklab: HueShiftOklabKernel::new(&program)?,
+            contrast_oklab: ContrastOklabKernel::new(&program)?,
+            saturation_oklab: SaturationOklabKernel::new(&program)?,
+            exposure_oklab: ExposureOklabKernel::new(&program)?,
+            program: program,
         })
     }
 }

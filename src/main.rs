@@ -3,7 +3,6 @@ use opencl3::command_queue::{CommandQueue, CL_BLOCKING};
 use opencl3::context::Context;
 use opencl3::device::{get_all_devices, Device, CL_DEVICE_TYPE_GPU};
 use opencl3::memory::{Buffer, CL_MEM_READ_ONLY, CL_MEM_READ_WRITE};
-use opencl3::program::Program;
 use std::error::Error;
 use std::ptr;
 
@@ -33,27 +32,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     let context = Context::from_device(&device)?;
     let queue = CommandQueue::create_default(&context, 0)?;
 
-    let rgba8_to_oklab_src = std::fs::read_to_string("kernels/rgba8_to_oklab.cl")?;
-    let oklab_to_rgba8_src = std::fs::read_to_string("kernels/oklab_to_rgba8.cl")?;
-    let hue_shift_src = std::fs::read_to_string("kernels/filters/hue_shift.cl")?;
-    let contrast_src = std::fs::read_to_string("kernels/filters/contrast.cl")?;
-    let saturation_src = std::fs::read_to_string("kernels/filters/saturation.cl")?;
-    let exposure_src = std::fs::read_to_string("kernels/filters/exposure.cl")?;
-
-    let full_source = format!(
-        "{}\n{}\n{}\n{}\n{}\n{}",
-        rgba8_to_oklab_src,
-        hue_shift_src,
-        oklab_to_rgba8_src,
-        contrast_src,
-        saturation_src,
-        exposure_src
-    );
-
-    let build_options = "-O2 -cl-mad-enable";
-
-    let program = Program::create_and_build_from_source(&context, &full_source, &build_options)?;
-    let mut kernels = ColorKernels::new(&program)?;
+    let mut kernels = ColorKernels::create(&context, None)?;
 
     let mut src_rgba = unsafe {
         Buffer::<u8>::create(

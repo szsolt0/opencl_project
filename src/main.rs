@@ -14,7 +14,9 @@ fn main() -> Result<(), Box<dyn Error>> {
     let output_path = "test_images/out.jpg";
 
     let shift_degrees = 0.0f32;
-    let contrast = 0.8f32;
+    let contrast = 1.0f32;
+    let saturation = 1.0f32;
+    let exposure = 1.0f32;
 
     let img = image::open(input_path)?.to_rgba8();
     let width = img.width() as usize;
@@ -35,13 +37,17 @@ fn main() -> Result<(), Box<dyn Error>> {
     let oklab_to_rgba8_src = std::fs::read_to_string("kernels/oklab_to_rgba8.cl")?;
     let hue_shift_src = std::fs::read_to_string("kernels/filters/hue_shift.cl")?;
     let contrast_src = std::fs::read_to_string("kernels/filters/contrast.cl")?;
+    let saturation_src = std::fs::read_to_string("kernels/filters/saturation.cl")?;
+    let exposure_src = std::fs::read_to_string("kernels/filters/exposure.cl")?;
 
     let full_source = format!(
-        "{}\n{}\n{}\n{}",
+        "{}\n{}\n{}\n{}\n{}\n{}",
         rgba8_to_oklab_src,
         hue_shift_src,
         oklab_to_rgba8_src,
-        contrast_src
+        contrast_src,
+        saturation_src,
+        exposure_src
     );
 
     let build_options = "-O2 -cl-mad-enable";
@@ -91,6 +97,14 @@ fn main() -> Result<(), Box<dyn Error>> {
     kernels
         .contrast_oklab
         .run(&queue, &tmp_oklab, contrast, pixel_count)?;
+
+    kernels
+        .saturation_oklab
+        .run(&queue, &tmp_oklab, saturation, pixel_count)?;
+
+    kernels
+        .exposure_oklab
+        .run(&queue, &tmp_oklab, exposure, pixel_count)?;
 
     kernels
         .oklab_to_rgba8

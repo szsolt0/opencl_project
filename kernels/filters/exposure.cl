@@ -1,11 +1,12 @@
-inline float2 scale_ab(float2 ab, float amount)
+inline float apply_exposure_l(float L, float ev)
 {
-    return ab * amount;
+    float scale = exp2(ev);
+    return clamp(L * scale, 0.0f, 1.0f);
 }
 
-__kernel void saturation(
+__kernel void exposure(
     __global float4* pixels,
-    float amount,
+    float ev,
     int pixel_count)
 {
     int i = get_global_id(0);
@@ -18,11 +19,7 @@ __kernel void saturation(
     // p.z = b
     // p.w = alpha
 
-    float2 ab = (float2)(p.y, p.z);
-    ab = scale_ab(ab, amount);
-
-    p.y = ab.x;
-    p.z = ab.y;
+    p.x = apply_exposure_l(p.x, ev);
 
     pixels[i] = p;
 }

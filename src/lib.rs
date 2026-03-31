@@ -78,6 +78,14 @@ pub struct ContrastOklabKernel {
     kernel: opencl3::kernel::Kernel,
 }
 
+pub struct SaturationOklabKernel {
+    kernel: opencl3::kernel::Kernel,
+}
+
+pub struct ExposureOklabKernel {
+    kernel: opencl3::kernel::Kernel,
+}
+
 impl Rgba8ToOklabKernel {
     pub fn new(program: &Program) -> Result<Self, opencl3::error_codes::ClError> {
         let kernel = Kernel::create(program, "rgba8_to_oklab")?;
@@ -226,12 +234,88 @@ impl ContrastOklabKernel {
     }
 }
 
+impl SaturationOklabKernel {
+    pub fn new(program: &Program) -> Result<Self, opencl3::error_codes::ClError> {
+        let kernel = Kernel::create(program, "saturation")?;
+        Ok(Self { kernel })
+    }
+
+    pub fn run(
+        &mut self,
+        queue: &CommandQueue,
+        pixels: &Buffer<f32>,
+        amount: f32,
+        pixel_count: usize,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let pixel_count_i32 = i32::try_from(pixel_count)?;
+
+        unsafe {
+            self.kernel.set_arg(0, pixels)?;
+            self.kernel.set_arg(1, &amount)?;
+            self.kernel.set_arg(2, &pixel_count_i32)?;
+        }
+
+        let global_work_size = [pixel_count];
+        unsafe {
+            queue.enqueue_nd_range_kernel(
+                self.kernel.get(),
+                1,
+                std::ptr::null(),
+                global_work_size.as_ptr(),
+                std::ptr::null(),
+                &[][..],
+            )?;
+        }
+
+        Ok(())
+    }
+}
+
+impl ExposureOklabKernel {
+    pub fn new(program: &Program) -> Result<Self, opencl3::error_codes::ClError> {
+        let kernel = Kernel::create(program, "exposure")?;
+        Ok(Self { kernel })
+    }
+
+    pub fn run(
+        &mut self,
+        queue: &CommandQueue,
+        pixels: &Buffer<f32>,
+        amount: f32,
+        pixel_count: usize,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let pixel_count_i32 = i32::try_from(pixel_count)?;
+
+        unsafe {
+            self.kernel.set_arg(0, pixels)?;
+            self.kernel.set_arg(1, &amount)?;
+            self.kernel.set_arg(2, &pixel_count_i32)?;
+        }
+
+        let global_work_size = [pixel_count];
+        unsafe {
+            queue.enqueue_nd_range_kernel(
+                self.kernel.get(),
+                1,
+                std::ptr::null(),
+                global_work_size.as_ptr(),
+                std::ptr::null(),
+                &[][..],
+            )?;
+        }
+
+        Ok(())
+    }
+}
+
 
 pub struct ColorKernels {
     pub rgba8_to_oklab: Rgba8ToOklabKernel,
     pub oklab_to_rgba8: OklabToRgba8Kernel,
     pub hue_shift_oklab: HueShiftOklabKernel,
     pub contrast_oklab: ContrastOklabKernel,
+    pub saturation_oklab: SaturationOklabKernel,
+    pub exposure_oklab: ExposureOklabKernel,
 }
 
 impl ColorKernels {
@@ -241,6 +325,8 @@ impl ColorKernels {
             oklab_to_rgba8: OklabToRgba8Kernel::new(program)?,
             hue_shift_oklab: HueShiftOklabKernel::new(program)?,
             contrast_oklab: ContrastOklabKernel::new(program)?,
+            saturation_oklab: SaturationOklabKernel::new(program)?,
+            exposure_oklab: ExposureOklabKernel::new(program)?,
         })
     }
 }

@@ -1,15 +1,14 @@
-use image::GenericImageView;
+use image::{Rgba, RgbaImage, ImageBuffer, DynamicImage};
 use opencl3::device::{get_all_devices, Device, CL_DEVICE_TYPE_GPU};
 use opencl3::types::cl_device_type;
 
-use opencl_project::image_filter::*;
-use opencl_project::image_state::*;
-use opencl_project::opencl_runtime::*;
+use opencl_project::{ImageFilter::*, OpenClRuntime, ImageState};
 
 const DEVICE_TYPE: cl_device_type = CL_DEVICE_TYPE_GPU;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let image_path = "test_images/img_land.jpg";
+    let image_path = "test_images/img_firefox.png";
+    let output_path = "test_images/out.png";
 
     let device_ids = get_all_devices(DEVICE_TYPE)?;
     let device_id = *device_ids
@@ -27,18 +26,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let rgba8 = img.to_rgba8();
     let (width, height) = rgba8.dimensions();
 
-    let rgba_pixels: Vec<u32> = rgba8
-        .pixels()
-        .map(|p| {
-            let [r, g, b, a] = p.0;
-            (r as u32)
-                | ((g as u32) << 8)
-                | ((b as u32) << 16)
-                | ((a as u32) << 24)
-        })
-        .collect();
+    let rgba_pixels = rgba8.into_raw();
 
-    let image_state = ImageState::from_rgba_host(&runtime, width, height, &rgba_pixels)?;
+    let mut image_state: ImageState = ImageState::from_rgba_host(&runtime, width, height, &rgba_pixels)?;
 
     println!("Loaded image: {}x{}", width, height);
     println!(
@@ -46,7 +36,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         width as usize * height as usize
     );
 
-    let _ = image_state;
+    //image_state.run_filter(HueShift { degrees: 60.0 }, &runtime)?;
+
+
+    let out_rgba_pixels: Vec<u8> = image_state.to_rgba_host(&runtime)?;
+
+    let out_rgba: RgbaImage =
+        ImageBuffer::from_raw(width as u32, height as u32, out_rgba_pixels)
+            .ok_or("failed to rebuild output image")?;
+
+    out_rgba.save(output_path)?;
+
+    println!("Saved filtered image to {}", output_path);
 
     Ok(())
 }

@@ -1,33 +1,29 @@
-use opencl3::memory::Buffer;
+use opencl3::{
+    command_queue::CL_BLOCKING, kernel::ExecuteKernel, memory::{Buffer, CL_MEM_READ_WRITE, ClMem}
+};
 
-use crate::ab_buffers::AbBuffers;
+use std::ptr;
+
+use crate::{ab_buffers::AbBuffers, image_filter::ImageFilter};
 use crate::opencl_runtime::OpenClRuntime;
 
 pub struct ImageState {
     pub width: u32,
     pub height: u32,
-    pub ab_buffers: AbBuffers<f32>,
-    pub original_rgba: opencl3::memory::Buffer<u32>,
+    pub oklab_buffer: Buffer<f32>,
 }
 
-use std::ptr;
-
-use opencl3::{
-    command_queue::CL_BLOCKING,
-    kernel::ExecuteKernel,
-    memory::{CL_MEM_READ_WRITE},
-};
 
 impl ImageState {
     pub fn from_rgba_host(
         runtime: &OpenClRuntime,
         width: u32,
         height: u32,
-        rgba_host: &[u32],
+        rgba_host: &[u8],
     ) -> Result<Self, ImageStateInitError> {
         let pixel_count = width as usize * height as usize;
 
-        if rgba_host.len() != pixel_count {
+        if rgba_host.len() != pixel_count*4 {
             return Err(ImageStateInitError::SizeMismatch {
                 expected_pixels: pixel_count,
                 actual_pixels: rgba_host.len(),
@@ -35,36 +31,21 @@ impl ImageState {
         }
 
         let mut original_rgba = unsafe {
-            Buffer::<u32>::create(
+            Buffer::<u8>::create(
                 &runtime.context,
                 CL_MEM_READ_WRITE,
-                pixel_count,
+                pixel_count * 4,
                 ptr::null_mut(),
             )?
         };
 
-        let oklab_a = unsafe {
+        let oklab = unsafe {
             Buffer::<f32>::create(
                 &runtime.context,
                 CL_MEM_READ_WRITE,
-                pixel_count * 3,
+                pixel_count * 4,
                 ptr::null_mut(),
             )?
-        };
-
-        let oklab_b = unsafe {
-            Buffer::<f32>::create(
-                &runtime.context,
-                CL_MEM_READ_WRITE,
-                pixel_count * 3,
-                ptr::null_mut(),
-            )?
-        };
-
-        let oklab = AbBuffers {
-            a: oklab_a,
-            b: oklab_b,
-            a_is_current: true,
         };
 
         unsafe {
@@ -79,21 +60,146 @@ impl ImageState {
 
         unsafe {
             ExecuteKernel::new(&runtime.filter_kernels.rgba_to_oklab)
-                .set_arg(&original_rgba)
-                .set_arg(&oklab.a)
-                .set_arg(&(pixel_count as i32))
-                .set_global_work_size(pixel_count)
-                .enqueue_nd_range(&runtime.queue)?;
+            .set_arg(&original_rgba.get())
+            .set_arg(&oklab.get())
+            .set_arg(&(pixel_count as i32))
+            .set_global_work_size(pixel_count)
+            .enqueue_nd_range(&runtime.queue)?;
         }
 
         runtime.queue.finish()?;
+        std::mem::drop(original_rgba);
 
         Ok(Self {
             width,
             height,
-            original_rgba,
-            ab_buffers: oklab,
+            oklab_buffer: oklab,
         })
+    }
+
+    pub fn to_rgba_host(
+        self,
+        runtime: &OpenClRuntime,
+    ) -> Result<Vec<u8>, ImageStateInitError> {
+        let pixel_count = self.width as usize * self.height as usize;
+
+        let mut rgba_buffer = unsafe {
+            Buffer::<u8>::create(
+                &runtime.context,
+                CL_MEM_READ_WRITE,
+                pixel_count * 4,
+                ptr::null_mut(),
+            )?
+        };
+
+        println!("convert oklab to rgba");
+
+        unsafe {
+            ExecuteKernel::new(&runtime.filter_kernels.oklab_to_rgba)
+            .set_arg(&self.oklab_buffer.get())
+            .set_arg(&rgba_buffer.get())
+            .set_arg(&(pixel_count as i32))
+            .set_global_work_size(pixel_count)
+            .enqueue_nd_range(&runtime.queue)?;
+        }
+
+        runtime.queue.finish()?;
+        println!("convert oklab to rgba finished");
+
+        std::mem::drop(self.oklab_buffer);
+
+        let mut rgba_host = vec![0u8; pixel_count * 4];
+
+        unsafe {
+            runtime.queue.enqueue_read_buffer(
+                &rgba_buffer,
+                CL_BLOCKING,
+                0,
+                &mut rgba_host,
+                &[][..],
+            )?;
+        }
+
+        Ok(rgba_host)
+    }
+
+    pub fn run_filter(
+        &mut self,
+        filter: ImageFilter,
+        runtime: &OpenClRuntime,
+    ) -> Result<(), ImageStateInitError> {
+        let pixel_count = (self.width as usize) * (self.height as usize);
+        let kernel = runtime.filter_kernels.kernel_for_filter(&filter).unwrap();
+        let mut exec_kernel = ExecuteKernel::new(&kernel);
+
+        println!("running filter: {}", filter.kind().kernel_name());
+
+        match filter {
+            // Point ops: in-place on current buffer
+            ImageFilter::Exposure { ev } => unsafe {
+                exec_kernel
+                .set_arg(&self.oklab_buffer.get())
+                .set_arg(&ev)
+                .set_arg(&(pixel_count as i32));
+            },
+
+            ImageFilter::Contrast { amount } => unsafe {
+                exec_kernel
+                .set_arg(&self.oklab_buffer.get())
+                .set_arg(&amount)
+                .set_arg(&(pixel_count as i32));
+            },
+
+            ImageFilter::Saturation { amount } => unsafe {
+                exec_kernel
+                .set_arg(&self.oklab_buffer.get())
+                .set_arg(&amount)
+                .set_arg(&(pixel_count as i32));
+            },
+
+            ImageFilter::HueShift { degrees } => unsafe {
+                exec_kernel
+                .set_arg(&self.oklab_buffer.get())
+                .set_arg(&degrees.to_radians())
+                .set_arg(&(pixel_count as i32));
+            },
+
+            // Spatial ops: current -> other, then flip
+            /*ImageFilter::GaussianBlur { radius, sigma } => unsafe {
+                exec_kernel
+                .set_arg(&self.ab_buffers.current())
+                .set_arg(&self.ab_buffers.other())
+                .set_arg(&(self.width as i32))
+                .set_arg(&(self.height as i32))
+                .set_arg(&(radius as i32))
+                .set_arg(&sigma);
+
+                self.ab_buffers.swap();
+            },
+
+            ImageFilter::BoxBlur { radius } => unsafe {
+                exec_kernel
+                .set_arg(&self.ab_buffers.current())
+                .set_arg(&self.ab_buffers.other())
+                .set_arg(&(self.width as i32))
+                .set_arg(&(self.height as i32))
+                .set_arg(&(radius as i32));
+
+                self.ab_buffers.swap();
+            }*/
+
+            _ => panic!("unimplemented")
+        }
+
+        unsafe {
+            exec_kernel
+            .set_global_work_size(pixel_count)
+            .enqueue_nd_range(&runtime.queue)?;
+        }
+
+        runtime.queue.finish()?;
+        println!("conversion finished");
+        Ok(())
     }
 }
 

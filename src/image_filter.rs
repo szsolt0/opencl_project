@@ -135,8 +135,8 @@ impl ImageFilterKernels {
             kernels.insert(kind, kernel);
         }
 
-        let rgba_to_oklab = Kernel::create(&program, "oklab_to_rgba8")?;
-        let oklab_to_rgba = Kernel::create(&program, "rgba8_to_oklab")?;
+        let rgba_to_oklab = Kernel::create(&program, "rgba8_to_oklab")?;
+        let oklab_to_rgba = Kernel::create(&program, "oklab_to_rgba8")?;
 
         Ok(Self { program, kernels, rgba_to_oklab, oklab_to_rgba })
     }

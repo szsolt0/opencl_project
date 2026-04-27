@@ -141,12 +141,12 @@ impl ImageFilterKernels {
         Ok(Self { program, kernels, rgba_to_oklab, oklab_to_rgba })
     }
 
-    pub fn kernel_for_filter(&self, filter: &ImageFilter) -> Option<&Kernel> {
-        self.kernels.get(&filter.kind())
+    pub fn kernel_for_filter(&self, filter: &ImageFilter) -> &Kernel {
+        self.kernels.get(&filter.kind()).unwrap()
     }
 
-    pub fn kernel_for_kind(&self, kind: ImageFilterKind) -> Option<&Kernel> {
-        self.kernels.get(&kind)
+    pub fn kernel_for_kind(&self, kind: ImageFilterKind) -> &Kernel {
+        self.kernels.get(&kind).unwrap()
     }
 
     pub fn program(&self) -> &Program {

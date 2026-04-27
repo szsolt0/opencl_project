@@ -1,13 +1,15 @@
-use image::{Rgba, RgbaImage, ImageBuffer, DynamicImage};
+use image::{RgbaImage, ImageBuffer};
 use opencl3::device::{get_all_devices, Device, CL_DEVICE_TYPE_GPU};
 use opencl3::types::cl_device_type;
 
 use opencl_project::{ImageFilter::*, OpenClRuntime, ImageState};
 
+use std::sync::Arc;
+
 const DEVICE_TYPE: cl_device_type = CL_DEVICE_TYPE_GPU;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let image_path = "test_images/img_firefox.png";
+    let image_path = "test_images/img_land.jpg";
     let output_path = "test_images/out.png";
 
     let device_ids = get_all_devices(DEVICE_TYPE)?;
@@ -18,7 +20,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let device = Device::new(device_id);
     println!("Using device: {}", device.name()?);
 
-    let runtime = OpenClRuntime::init(device_id)?;
+    let runtime = Arc::new(OpenClRuntime::init(device_id)?);
     println!("OpenCL program compiled successfully.");
     println!("Kernel set initialized.");
 
@@ -26,9 +28,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let rgba8 = img.to_rgba8();
     let (width, height) = rgba8.dimensions();
 
-    let rgba_pixels = rgba8.into_raw();
+    let mut rgba_pixels = rgba8.into_raw();
 
-    let mut image_state: ImageState = ImageState::from_rgba_host(&runtime, width, height, &rgba_pixels)?;
+    let mut image_state: ImageState = ImageState::from_rgba_host(runtime.clone(), width, height, &rgba_pixels)?;
 
     println!("Loaded image: {}x{}", width, height);
     println!(
@@ -36,13 +38,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         width as usize * height as usize
     );
 
-    //image_state.run_filter(HueShift { degrees: 60.0 }, &runtime)?;
+    image_state.run_filter(HueShift { degrees: 60.0 })?;
+    image_state.run_filter(Saturation { amount: 1.5 })?;
 
 
-    let out_rgba_pixels: Vec<u8> = image_state.to_rgba_host(&runtime)?;
+    image_state.to_rgba_host(&mut rgba_pixels)?;
 
     let out_rgba: RgbaImage =
-        ImageBuffer::from_raw(width as u32, height as u32, out_rgba_pixels)
+        ImageBuffer::from_raw(width as u32, height as u32, rgba_pixels)
             .ok_or("failed to rebuild output image")?;
 
     out_rgba.save(output_path)?;

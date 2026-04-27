@@ -3,6 +3,7 @@ use opencl3::{
 };
 
 use std::ptr;
+use std::sync::Arc;
 
 use crate::{ab_buffers::AbBuffers, image_filter::ImageFilter};
 use crate::opencl_runtime::OpenClRuntime;
@@ -10,13 +11,14 @@ use crate::opencl_runtime::OpenClRuntime;
 pub struct ImageState {
     pub width: u32,
     pub height: u32,
-    pub oklab_buffer: Buffer<f32>,
+    pub buffers: AbBuffers<f32>,
+    pub runtime: Arc<OpenClRuntime>,
 }
 
 
 impl ImageState {
     pub fn from_rgba_host(
-        runtime: &OpenClRuntime,
+        runtime: Arc<OpenClRuntime>,
         width: u32,
         height: u32,
         rgba_host: &[u8],
@@ -39,14 +41,7 @@ impl ImageState {
             )?
         };
 
-        let oklab = unsafe {
-            Buffer::<f32>::create(
-                &runtime.context,
-                CL_MEM_READ_WRITE,
-                pixel_count * 4,
-                ptr::null_mut(),
-            )?
-        };
+        let oklab_buffers: AbBuffers<f32> = AbBuffers::<f32>::create(4*pixel_count, &runtime.context)?;
 
         unsafe {
             runtime.queue.enqueue_write_buffer(
@@ -61,7 +56,7 @@ impl ImageState {
         unsafe {
             ExecuteKernel::new(&runtime.filter_kernels.rgba_to_oklab)
             .set_arg(&original_rgba.get())
-            .set_arg(&oklab.get())
+            .set_arg(&oklab_buffers.current().get())
             .set_arg(&(pixel_count as i32))
             .set_global_work_size(pixel_count)
             .enqueue_nd_range(&runtime.queue)?;
@@ -73,19 +68,27 @@ impl ImageState {
         Ok(Self {
             width,
             height,
-            oklab_buffer: oklab,
+            buffers: oklab_buffers,
+            runtime,
         })
     }
 
     pub fn to_rgba_host(
-        self,
-        runtime: &OpenClRuntime,
-    ) -> Result<Vec<u8>, ImageStateInitError> {
+        &mut self,
+        rgba_host: &mut [u8],
+    ) -> Result<(), ImageStateInitError> {
         let pixel_count = self.width as usize * self.height as usize;
 
-        let mut rgba_buffer = unsafe {
+        if rgba_host.len() != pixel_count*4 {
+            return Err(ImageStateInitError::SizeMismatch {
+                expected_pixels: pixel_count,
+                actual_pixels: rgba_host.len(),
+            });
+        }
+
+        let rgba_buffer = unsafe {
             Buffer::<u8>::create(
-                &runtime.context,
+                &self.runtime.context,
                 CL_MEM_READ_WRITE,
                 pixel_count * 4,
                 ptr::null_mut(),
@@ -95,41 +98,36 @@ impl ImageState {
         println!("convert oklab to rgba");
 
         unsafe {
-            ExecuteKernel::new(&runtime.filter_kernels.oklab_to_rgba)
-            .set_arg(&self.oklab_buffer.get())
+            ExecuteKernel::new(&self.runtime.filter_kernels.oklab_to_rgba)
+            .set_arg(&self.buffers.current().get())
             .set_arg(&rgba_buffer.get())
             .set_arg(&(pixel_count as i32))
             .set_global_work_size(pixel_count)
-            .enqueue_nd_range(&runtime.queue)?;
+            .enqueue_nd_range(&self.runtime.queue)?;
         }
 
-        runtime.queue.finish()?;
+        self.runtime.queue.finish()?;
         println!("convert oklab to rgba finished");
 
-        std::mem::drop(self.oklab_buffer);
-
-        let mut rgba_host = vec![0u8; pixel_count * 4];
-
         unsafe {
-            runtime.queue.enqueue_read_buffer(
+            self.runtime.queue.enqueue_read_buffer(
                 &rgba_buffer,
                 CL_BLOCKING,
                 0,
-                &mut rgba_host,
+                rgba_host,
                 &[][..],
             )?;
         }
 
-        Ok(rgba_host)
+        Ok(())
     }
 
     pub fn run_filter(
         &mut self,
         filter: ImageFilter,
-        runtime: &OpenClRuntime,
     ) -> Result<(), ImageStateInitError> {
         let pixel_count = (self.width as usize) * (self.height as usize);
-        let kernel = runtime.filter_kernels.kernel_for_filter(&filter).unwrap();
+        let kernel = self.runtime.filter_kernels.kernel_for_filter(&filter);
         let mut exec_kernel = ExecuteKernel::new(&kernel);
 
         println!("running filter: {}", filter.kind().kernel_name());
@@ -138,28 +136,28 @@ impl ImageState {
             // Point ops: in-place on current buffer
             ImageFilter::Exposure { ev } => unsafe {
                 exec_kernel
-                .set_arg(&self.oklab_buffer.get())
+                .set_arg(&self.buffers.current().get())
                 .set_arg(&ev)
                 .set_arg(&(pixel_count as i32));
             },
 
             ImageFilter::Contrast { amount } => unsafe {
                 exec_kernel
-                .set_arg(&self.oklab_buffer.get())
+                .set_arg(&self.buffers.current().get())
                 .set_arg(&amount)
                 .set_arg(&(pixel_count as i32));
             },
 
             ImageFilter::Saturation { amount } => unsafe {
                 exec_kernel
-                .set_arg(&self.oklab_buffer.get())
+                .set_arg(&self.buffers.current().get())
                 .set_arg(&amount)
                 .set_arg(&(pixel_count as i32));
             },
 
             ImageFilter::HueShift { degrees } => unsafe {
                 exec_kernel
-                .set_arg(&self.oklab_buffer.get())
+                .set_arg(&self.buffers.current().get())
                 .set_arg(&degrees.to_radians())
                 .set_arg(&(pixel_count as i32));
             },
@@ -194,10 +192,10 @@ impl ImageState {
         unsafe {
             exec_kernel
             .set_global_work_size(pixel_count)
-            .enqueue_nd_range(&runtime.queue)?;
+            .enqueue_nd_range(&self.runtime.queue)?;
         }
 
-        runtime.queue.finish()?;
+        //runtime.queue.finish()?;
         println!("conversion finished");
         Ok(())
     }

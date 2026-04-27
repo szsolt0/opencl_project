@@ -122,12 +122,13 @@ pub struct ImageFilterKernels {
 impl ImageFilterKernels {
     pub fn init(
         context: &Context,
-        device_id: cl_device_id,
+        _device_id: cl_device_id,
     ) -> Result<Self, KernelInitError> {
         let source = load_kernel_source_tree("kernels")?;
 
-        let mut program = Program::create_from_source(context, &source)?;
-        program.build(&[device_id], "")?;
+        let build_opt = "-cl-std=CL1.2";
+        let program = Program::create_and_build_from_source(&context, &source, build_opt).unwrap();
+        //program.build(&[device_id], "-O2")?;
 
         let mut kernels = HashMap::new();
         for kind in ImageFilterKind::all() {

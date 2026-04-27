@@ -4,6 +4,7 @@ use opencl3::{
 
 use std::ptr;
 use std::sync::Arc;
+use std::time::Instant;
 
 use crate::{ab_buffers::AbBuffers, image_filter::ImageFilter};
 use crate::opencl_runtime::OpenClRuntime;
@@ -23,14 +24,17 @@ impl ImageState {
         height: u32,
         rgba_host: &[u8],
     ) -> Result<Self, ImageStateInitError> {
+        let total_start = Instant::now();
         let pixel_count = width as usize * height as usize;
 
-        if rgba_host.len() != pixel_count*4 {
+        if rgba_host.len() != 4*pixel_count {
             return Err(ImageStateInitError::SizeMismatch {
-                expected_pixels: pixel_count,
+                expected_pixels: 4*pixel_count,
                 actual_pixels: rgba_host.len(),
             });
         }
+
+        let t = Instant::now();
 
         let mut original_rgba = unsafe {
             Buffer::<u8>::create(
@@ -43,6 +47,10 @@ impl ImageState {
 
         let oklab_buffers: AbBuffers<f32> = AbBuffers::<f32>::create(4*pixel_count, &runtime.context)?;
 
+        println!("bench: create starting buffers: {:.5} ms", t.elapsed().as_secs_f64() * 1000.0);
+
+        let t = Instant::now();
+
         unsafe {
             runtime.queue.enqueue_write_buffer(
                 &mut original_rgba,
@@ -50,8 +58,12 @@ impl ImageState {
                 0,
                 rgba_host,
                 &[][..],
-            )?;
-        }
+            )?
+        };
+
+        println!("bench: upload rgba host -> device: {:.5} ms", t.elapsed().as_secs_f64() * 1000.0);
+
+        let t = Instant::now();
 
         unsafe {
             ExecuteKernel::new(&runtime.filter_kernels.rgba_to_oklab)
@@ -59,11 +71,15 @@ impl ImageState {
             .set_arg(&oklab_buffers.current().get())
             .set_arg(&(pixel_count as i32))
             .set_global_work_size(pixel_count)
-            .enqueue_nd_range(&runtime.queue)?;
-        }
+            .enqueue_nd_range(&runtime.queue)?
+        };
 
         runtime.queue.finish()?;
+        println!("bench: kernel rgba -> oklab: {:.5} ms", t.elapsed().as_secs_f64() * 1000.0);
+
         std::mem::drop(original_rgba);
+
+        println!("bench: from_rgba_host total wall: {:.5} ms", total_start.elapsed().as_secs_f64() * 1000.0);
 
         Ok(Self {
             width,
@@ -77,11 +93,12 @@ impl ImageState {
         &mut self,
         rgba_host: &mut [u8],
     ) -> Result<(), ImageStateInitError> {
+        let start_total = Instant::now();
         let pixel_count = self.width as usize * self.height as usize;
 
-        if rgba_host.len() != pixel_count*4 {
+        if rgba_host.len() != 4*pixel_count {
             return Err(ImageStateInitError::SizeMismatch {
-                expected_pixels: pixel_count,
+                expected_pixels: 4*pixel_count,
                 actual_pixels: rgba_host.len(),
             });
         }
@@ -95,7 +112,7 @@ impl ImageState {
             )?
         };
 
-        println!("convert oklab to rgba");
+        let t = Instant::now();
 
         unsafe {
             ExecuteKernel::new(&self.runtime.filter_kernels.oklab_to_rgba)
@@ -103,11 +120,13 @@ impl ImageState {
             .set_arg(&rgba_buffer.get())
             .set_arg(&(pixel_count as i32))
             .set_global_work_size(pixel_count)
-            .enqueue_nd_range(&self.runtime.queue)?;
-        }
+            .enqueue_nd_range(&self.runtime.queue)?
+        };
 
         self.runtime.queue.finish()?;
-        println!("convert oklab to rgba finished");
+        println!("bench: kernel oklab -> rgba: {:.5} ms", t.elapsed().as_secs_f64() * 1000.0);
+
+        let t = Instant::now();
 
         unsafe {
             self.runtime.queue.enqueue_read_buffer(
@@ -119,6 +138,9 @@ impl ImageState {
             )?;
         }
 
+        println!("bench: download device -> rgba host: {:.5} ms", t.elapsed().as_secs_f64() * 1000.0);
+        println!("bench: to_rgba_host total wall: {:.5}", start_total.elapsed().as_secs_f64() * 1000.0);
+
         Ok(())
     }
 
@@ -129,8 +151,6 @@ impl ImageState {
         let pixel_count = (self.width as usize) * (self.height as usize);
         let kernel = self.runtime.filter_kernels.kernel_for_filter(&filter);
         let mut exec_kernel = ExecuteKernel::new(&kernel);
-
-        println!("running filter: {}", filter.kind().kernel_name());
 
         match filter {
             // Point ops: in-place on current buffer
@@ -189,17 +209,32 @@ impl ImageState {
             _ => panic!("unimplemented")
         }
 
+        let t = Instant::now();
+
         unsafe {
             exec_kernel
             .set_global_work_size(pixel_count)
-            .enqueue_nd_range(&self.runtime.queue)?;
-        }
+            .enqueue_nd_range(&self.runtime.queue)?
+        };
 
-        //runtime.queue.finish()?;
-        println!("conversion finished");
+        self.runtime.queue.finish()?;
+        println!("bench: kernel {:?}: {:.5} ms", filter, t.elapsed().as_secs_f64() * 1000.0);
+
+
         Ok(())
     }
 }
+
+
+// This results in too small numbers for some reason
+/*fn event_ms(event: &Event) -> Result<f64, opencl3::error_codes::ClError> {
+    event.wait()?;
+
+    let start = event.profiling_command_start()?;
+    let end = event.profiling_command_end()?;
+
+    Ok((end - start) as f64 / 1_000_000.0)
+}*/
 
 #[derive(Debug)]
 pub enum ImageStateInitError {

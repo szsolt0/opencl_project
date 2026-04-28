@@ -241,9 +241,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut rgba_pixels = rgba8.into_raw();
 
     println!("Loaded image: {}x{}", width, height);
+    let pixel_count = width as usize * height as usize;
     println!(
-        "Image has {} pixels.",
-        width as usize * height as usize
+        "Image has {} pixels. ({:.3} MiB RGBA, {:.3} MiB OkLab)",
+        pixel_count,
+        (4*pixel_count) as f64 / (1024*1024) as f64,
+        (4*4*pixel_count) as f64 / (1024*1024) as f64
     );
 
     let total_image_work = Instant::now();

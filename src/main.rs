@@ -208,7 +208,7 @@ fn cpu_main(
 
     let t = Instant::now();
     let mut oklab_buf = rgba8_to_oklab(rgba_pixels);
-    println!("bench: cpu rgba -> oklab: {:.5} ms", t.elapsed().as_secs_f64() * 1000.0);
+    println!("bench: kernel rgba -> oklab: {:.5} ms", t.elapsed().as_secs_f64() * 1000.0);
 
     for filter in filters {
         let t = Instant::now();
@@ -221,12 +221,12 @@ fn cpu_main(
             _ => panic!("AAAAAHHHHHHH!")
         }
 
-        println!("bench: {:?}: {:.5} ms", filter, t.elapsed().as_secs_f64() * 1000.0);
+        println!("bench: kernel {:?}: {:.5} ms", filter, t.elapsed().as_secs_f64() * 1000.0);
     }
 
     let t = Instant::now();
     oklab_to_rgba8(&oklab_buf, rgba_pixels);
-    println!("bench: cpu oklab -> rgba: {:.5} ms", t.elapsed().as_secs_f64() * 1000.0);
+    println!("bench: kernel oklab -> rgba: {:.5} ms", t.elapsed().as_secs_f64() * 1000.0);
 
     Ok(())
 }

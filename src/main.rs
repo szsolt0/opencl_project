@@ -4,7 +4,6 @@ use std::sync::Arc;
 
 use image::{ImageBuffer, RgbaImage};
 use opencl3::device::{get_all_devices, Device};
-use opencl3::types::cl_device_type;
 
 #[allow(unused_imports)]
 use opencl3::device::{CL_DEVICE_TYPE_CPU, CL_DEVICE_TYPE_GPU};
@@ -13,6 +12,13 @@ use opencl_project::image_filter::ImageFilter::*;
 use opencl_project::image_filter::ImageFilter;
 use opencl_project::image_state::ImageState;
 use opencl_project::opencl_runtime::OpenClRuntime;
+
+use opencl_project::cpu_filters::point_ops::contrast::*;
+use opencl_project::cpu_filters::point_ops::exposure::*;
+use opencl_project::cpu_filters::point_ops::saturation::*;
+use opencl_project::cpu_filters::oklab_to_rgba::*;
+use opencl_project::cpu_filters::rgba_to_oklab::*;
+use opencl_project::cpu_filters::point_ops::hue_shift::*;
 
 //const DEVICE_TYPE: cl_device_type = CL_DEVICE_TYPE_CPU;
 
@@ -95,7 +101,7 @@ fn parse_one_f32(name: &str, values: &[&str]) -> Result<f32, String> {
 fn print_usage(program_name: &str) {
     eprintln!(
         "Usage:
-  {program_name} <device> <input> <output> <filter>...
+  {program_name} <cpu|gpu> <input> <output> <filter>...
 
 Filters:
   exposure:<ev>
@@ -106,21 +112,31 @@ Filters:
   box_blur:<radius>
 
 Example:
-  {program_name} gpu input.png output.png hue_shift:45 saturation:1.5 gaussian_blur:4,2.5
-Device types:
-  gpu, cpu"
+  {program_name} gpu input.png output.png hue_shift:45 saturation:1.5 gaussian_blur:4,2.5"
     );
 }
 
-fn parse_device_type(name: &str) -> Result<cl_device_type, String> {
+pub enum DeviceType {
+    Gpu,
+    Cpu,
+}
+
+fn parse_device_type(name: &str) -> Result<DeviceType, String> {
     match name {
-        "cpu" => Ok(CL_DEVICE_TYPE_CPU),
-        "gpu" => Ok(CL_DEVICE_TYPE_GPU),
-        _ => Err(format!("unknown filter: {name}")),
+        "cpu" => Ok(DeviceType::Cpu),
+        "gpu" => Ok(DeviceType::Gpu),
+        _ => Err(format!("unknown device: {name}")),
     }
 }
 
-fn main() -> Result<(), Box<dyn std::error::Error>> {
+struct CliArgs {
+    device_type: DeviceType,
+    input_path: String,
+    output_path: String,
+    filters: Vec<ImageFilter>,
+}
+
+fn parse_args() -> Result<CliArgs, Box<dyn std::error::Error>> {
     let args: Vec<String> = env::args().collect();
 
     if args.len() < 4 {
@@ -129,33 +145,96 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     let device_type = parse_device_type(&args[1])?;
-    let image_path = &args[2];
-    let output_path = &args[3];
+    let input_path = args[2].clone();
+    let output_path = args[3].clone();
 
     let filters: Vec<ImageFilter> = args[4..]
         .iter()
         .map(|arg| parse_filter(arg))
         .collect::<Result<_, _>>()?;
 
-    let device_ids = get_all_devices(device_type)?;
+    Ok(CliArgs {
+        device_type,
+        input_path,
+        output_path,
+        filters,
+    })
+}
+
+fn gpu_main(
+    width: u32,
+    height: u32,
+    filters: &[ImageFilter],
+    rgba_pixels: &mut [u8],
+) -> Result<(), Box<dyn std::error::Error>> {
+    let device_ids = get_all_devices(CL_DEVICE_TYPE_GPU)?;
     let device_id = *device_ids
         .first()
-        .ok_or("no OpenCL device found")?;
+        .ok_or("no OpenCL GPU device found")?;
 
     let device = Device::new(device_id);
-    println!("Using device: {}", device.name()?);
+    println!("Using GPU device: {}", device.name()?);
 
     let runtime_start = Instant::now();
+
     let runtime = OpenClRuntime::init(device_id)?;
-    let runtime_load_time = runtime_start.elapsed();
+
     println!(
         "bench: OpenCL runtime/kernel load: {:.3} ms",
-        runtime_load_time.as_secs_f64() * 1000.0
+        runtime_start.elapsed().as_secs_f64() * 1000.0
     );
 
     let runtime = Arc::new(runtime);
 
-    let img = image::open(image_path)?;
+    let mut image_state =
+        ImageState::from_rgba_host(runtime, width, height, rgba_pixels)?;
+
+    for &filter in filters {
+        image_state.run_filter(filter)?;
+    }
+
+    image_state.to_rgba_host(rgba_pixels)?;
+
+    Ok(())
+}
+
+fn cpu_main(
+    width: u32,
+    height: u32,
+    filters: &[ImageFilter],
+    rgba_pixels: &mut [u8],
+) -> Result<(), Box<dyn std::error::Error>> {
+    let _pixel_count = width as usize * height as usize;
+
+    let t = Instant::now();
+    let mut oklab_buf = rgba8_to_oklab(rgba_pixels);
+    println!("bench: cpu rgba -> oklab: {:.5} ms", t.elapsed().as_secs_f64() * 1000.0);
+
+    for filter in filters {
+        let t = Instant::now();
+
+        match *filter {
+            HueShift { degrees } => hue_shift_inplace(&mut oklab_buf, degrees.to_radians()),
+            Exposure { ev } => exposure_inplace(&mut oklab_buf, ev),
+            Contrast { amount } => contrast_inplace(&mut oklab_buf, amount),
+            Saturation { amount } => saturation_inplace(&mut oklab_buf, amount),
+            _ => panic!("AAAAAHHHHHHH!")
+        }
+
+        println!("bench: {:?}: {:.5} ms", filter, t.elapsed().as_secs_f64() * 1000.0);
+    }
+
+    let t = Instant::now();
+    oklab_to_rgba8(&oklab_buf, rgba_pixels);
+    println!("bench: cpu oklab -> rgba: {:.5} ms", t.elapsed().as_secs_f64() * 1000.0);
+
+    Ok(())
+}
+
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let cli = parse_args()?;
+
+    let img = image::open(&cli.input_path)?;
     let rgba8 = img.to_rgba8();
     let (width, height) = rgba8.dimensions();
 
@@ -163,34 +242,33 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     println!("Loaded image: {}x{}", width, height);
     println!(
-        "Created ImageState for {} pixels.",
+        "Image has {} pixels.",
         width as usize * height as usize
     );
 
-    // The actual total work, not counting the PNG/JPG <-> Raw conversion
-    // and disk I/O.
     let total_image_work = Instant::now();
 
-    let mut image_state =
-        ImageState::from_rgba_host(runtime.clone(), width, height, &rgba_pixels)?;
-
-    for filter in filters {
-        // this is already written by benchmark code
-        //println!("Running filter: {:?}", filter);
-        image_state.run_filter(filter)?;
+    match cli.device_type {
+        DeviceType::Gpu => {
+            gpu_main(width, height, &cli.filters, &mut rgba_pixels)?;
+        }
+        DeviceType::Cpu => {
+            cpu_main(width, height, &cli.filters, &mut rgba_pixels)?;
+        }
     }
 
-    image_state.to_rgba_host(&mut rgba_pixels)?;
-
-    println!("bench: FULL TIME: {:.3} ms", total_image_work.elapsed().as_secs_f64() * 1000.0);
+    println!(
+        "bench: FULL TIME: {:.3} ms",
+        total_image_work.elapsed().as_secs_f64() * 1000.0
+    );
 
     let out_rgba: RgbaImage =
         ImageBuffer::from_raw(width, height, rgba_pixels)
             .ok_or("failed to rebuild output image")?;
 
-    out_rgba.save(output_path)?;
+    out_rgba.save(&cli.output_path)?;
 
-    println!("Saved filtered image to {}", output_path);
+    println!("Saved filtered image to {}", cli.output_path);
 
     Ok(())
 }

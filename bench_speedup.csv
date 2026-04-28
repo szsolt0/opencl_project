@@ -1,0 +1,7 @@
+"name","time_ms_cpu","time_ms_gpu","speedup","speedup_label"
+"Exposure",20.49841,15.61116,1.31306129717459,"1.31x faster"
+"FULL TIME",2241.237,322.834,6.94238215305699,"6.94x faster"
+"HueShift",552.41185,16.60313,33.271548798329,"33.27x faster"
+"oklab -> rgba",544.60362,31.77932,17.1370444679118,"17.14x faster"
+"rgba -> oklab",1088.05515,64.81685,16.7866095004617,"16.79x faster"
+"Saturation",25.25865,15.91147,1.58744917974266,"1.59x faster"
